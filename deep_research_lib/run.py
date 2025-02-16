@@ -64,28 +64,17 @@ Follow-up Questions and Answers:
     async def progress_callback(progress): # Define callback function inside run_research
         output.update_progress(progress)
 
-    learnings, visited_urls = await deep_research(
+    research_result = await deep_research( # Capture ResearchResult object
         query=combined_query,
         breadth=breadth,
         depth=depth,
         on_progress=progress_callback # Pass the callback function
     )
-    # Flatten the learnings list if it's nested
-    flat_learnings = []
-    for item in learnings:
-        if isinstance(item, list): # Check if item is a list (nested list)
-            flat_learnings.extend(item) # Extend with elements of the inner list
-        else:
-            flat_learnings.append(item) # Append if it's already a string
+    learnings = research_result.learnings # Access learnings from ResearchResult
+    visited_urls = research_result.visitedUrls # Access visitedUrls from ResearchResult
+
     log("Writing final report...")
-    print(f"\n--- Learnings before join ---\n{learnings}\n--- End Learnings ---\n") # Debug print
-    print(f"Type of 'learnings': {type(learnings)}") # Print type
-    print(f"Content of 'learnings': {learnings}") # Print content (again)
-    print(f"Is 'learnings' a list?: {isinstance(learnings, list)}") # Check if it's a list
-    print(f"Length of 'learnings': {len(learnings)}") # Print length
-    print(f"--- End Learnings ---\n")
     print(f"\n\nLearnings:\n\n{chr(10).join(learnings)}") # Use print() instead of log()
-    # log(f"\n\nLearnings:\n\n{chr(10).join(learnings)}") # using chr(10) for newline
     log(f"\n\nVisited URLs ({len(visited_urls)}):\n\n{chr(10).join(visited_urls)}") # using chr(10) for newline
     # log("Writing final report...")
 

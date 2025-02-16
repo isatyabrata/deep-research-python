@@ -51,7 +51,7 @@ class OllamaProvider:
     def __init__(self, base_url: str, model_name: str):
         self.base_url = base_url
         self.model_name = model_name
-        self.async_client = httpx.AsyncClient(base_url=self.base_url) # Async HTTP client for Ollama
+        # self.async_client = httpx.AsyncClient(base_url=self.base_url) # No need to initialize here anymore
 
     async def generate_object(self, prompt: str, system: str, response_model: Type[BaseModel], **kwargs) -> BaseModel:
         try:
@@ -66,18 +66,18 @@ class OllamaProvider:
                 "stream": False # Set to False for non-streaming response for now
                 # Could add more parameters from kwargs if needed, e.g., temperature
             }
-            async with self.async_client as client: # Use async context manager for client
+            async with httpx.AsyncClient(base_url=self.base_url) as client: # Create a NEW client here
                 response = await client.post("/chat/completions", json=payload, timeout=60.0) # Adjust timeout as needed
             response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
-            # raw_content = response.text # Get raw text content 
-            # print(f"Raw Ollama Response Content:\n---\n{raw_content}\n---") 
+            # raw_content = response.text # Get raw text content
+            # print(f"Raw Ollama Response Content:\n---\n{raw_content}\n---")
             response_json = response.json()
             # Assuming response_json['choices'][0]['message']['content'] contains the JSON string
             content = repair_json(response_json['choices'][0]['message']['content'])
             # print(f"Content: {content}")
             if content is None:
                 raise ValueError("No content in Ollama API response")
-            
+
             return response_model.parse_raw(content) # Parse JSON with Pydantic
 
         except httpx.HTTPError as e:
@@ -151,7 +151,7 @@ async def test_provider():
 
     try:
         # Now you need to call generate_object on the provider instance directly for testing
-        response = await provider.generate_object( 
+        response = await provider.generate_object(
             prompt="Write a short joke in JSON format.",
             system="You are a helpful joke-telling assistant.",
             response_model=TestResponse

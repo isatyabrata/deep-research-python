@@ -5,7 +5,7 @@ from pydantic import BaseModel, Field
 from concurrent.futures import ThreadPoolExecutor # For concurrent tasks
 import os
 
-# from mendable_firecrawl import FirecrawlApp, SearchResponse # Placeholder, needs actual Python Firecrawl lib or replacement
+from firecrawl import FirecrawlApp
 from deep_research_lib.ai.providers import o3_mini_model, trim_prompt, get_llm_provider # Assuming providers.py is in ai dir
 from deep_research_lib.prompt import system_prompt
 from deep_research_lib.output_manager import OutputManager
@@ -34,25 +34,28 @@ class ResearchResult(BaseModel):
 CONCURRENCY_LIMIT = 2 # You can make this configurable via env var later
 
 # Initialize Firecrawl - Placeholder, replace with actual Python Firecrawl or alternative
-class FirecrawlApp: # Mock FirecrawlApp for now - replace with actual library or implementation
-    def __init__(self, api_key=None, api_url=None):
-        self.api_key = api_key
-        self.api_url = api_url
-        # Initialize actual Firecrawl library here if you integrate it
+# class FirecrawlApp: # Mock FirecrawlApp for now - replace with actual library or implementation
+#     def __init__(self, api_key=None, api_url=None):
+#         self.api_key = api_key
+#         self.api_url = api_url
+#         # Initialize actual Firecrawl library here if you integrate it
 
-    async def search(self, query: str, options: dict) -> Any: # Replace Any with actual SearchResponse type if available
-        log(f"Mock Firecrawl Search: {query} with options: {options}")
-        await asyncio.sleep(1) # Simulate network request delay
-        # Mocked response data - replace with actual Firecrawl or search results
-        mock_data = [
-            {"url": f"http://example.com/page_{i}", "markdown": f"Mock markdown content for {query} result {i+1}."} for i in range(2)
-        ]
-        return {"data": mock_data} # Mock SearchResponse-like structure
+#     async def search(self, query: str, options: dict) -> Any: # Replace Any with actual SearchResponse type if available
+#         log(f"Mock Firecrawl Search: {query} with options: {options}")
+#         await asyncio.sleep(1) # Simulate network request delay
+#         # Mocked response data - replace with actual Firecrawl or search results
+#         mock_data = [
+#             {"url": f"http://example.com/page_{i}", "markdown": f"Mock markdown content for {query} result {i+1}."} for i in range(2)
+#         ]
+#         return {"data": mock_data} # Mock SearchResponse-like structure
 
 
 firecrawl_api_key = os.environ.get("FIRECRAWL_KEY") or '' # Default to empty string if not set
-firecrawl_base_url = os.environ.get("FIRECRAWL_BASE_URL") # Can be None, Firecrawl lib should handle default
-firecrawl = FirecrawlApp(firecrawl_api_key, firecrawl_base_url)
+# firecrawl_base_url = os.environ.get("FIRECRAWL_BASE_URL") # Can be None, Firecrawl lib should handle default
+if not firecrawl_api_key:
+    raise ValueError("FIRECRAWL_KEY environment variable must be set.")
+# firecrawl = FirecrawlApp(firecrawl_api_key, firecrawl_base_url)
+firecrawl = FirecrawlApp(firecrawl_api_key)
 
 class SerpQueriesResponse(BaseModel):
     queries: List[Dict[str, str]] = Field(description="List of SERP queries, max of numQueries")
@@ -80,7 +83,7 @@ Make sure each query is unique and not similar to each other: <prompt>{query}</p
         system=system_prompt(),
         response_model=SerpQueriesResponse # Pydantic model for schema
     )
-    
+
     log(f"Created {len(response.queries)} queries: {response.queries}")
     return response.queries[:num_queries]
 
@@ -107,7 +110,7 @@ generate a list of learnings from the contents. Return a maximum of {num_learnin
 Make sure each learning is unique and not similar to each other. The learnings should be concise and to the point, as detailed and information dense as possible.
 Make sure to include any entities like people, places, companies, products, things, etc in the learnings, as well as any exact metrics, numbers, or dates.
 The learnings will be used to research the topic further.\n\n<contents>{contents_string}</contents>""" # use chr(10) for newline
-    
+
     prompt_text += f"\n\nOutput should be in JSON format: {format_str_serp_result}"
 
     response = await llm_provider.generate_object( # Use llm_provider
@@ -132,7 +135,7 @@ async def write_final_report(prompt: str, learnings: List[str], visited_urls: Li
     prompt_text = f"""Given the following prompt from the user, write a final report on the topic using the learnings from research.
 Make it as as detailed as possible, aim for 3 or more pages, include ALL the learnings from research:\n\n<prompt>{prompt}</prompt>\n\n
 Here are all the learnings from previous research:\n\n<learnings>\n{learnings_string}\n</learnings>"""
-    
+
     prompt_text += f"\n\nOutput should be in JSON format: {format_str_final_report}"
 
     response = await llm_provider.generate_object( # Use llm_provider
@@ -177,8 +180,9 @@ async def deep_research(query: str, breadth: int, depth: int, learnings: Optiona
 
 
             try:
+                print("Query tetx: ", query_text)
                 result = await firecrawl.search(query_text, options={"timeout": 15000, "limit": 5, "scrapeOptions": {"formats": ["markdown"]}}) # Example options
-
+                print("Result: ", result)
                 new_urls = [item['url'] for item in result['data'] if item.get('url')] # Safely extract URLs
                 new_breadth = max(1, breadth // 2) # Ensure new_breadth is at least 1
                 new_depth = depth - 1
@@ -242,9 +246,10 @@ async def deep_research(query: str, breadth: int, depth: int, learnings: Optiona
     all_visited_urls_set: Set[str] = set()
 
     for res in results:
-        if res: # Check if result is not None (in case of errors, process_query_with_limit might return None or empty ResearchResult)
+        if res and res.learnings: # Check if res is not None and has learnings
             all_learnings_set.update(res.learnings)
             all_visited_urls_set.update(res.visitedUrls)
 
+    flat_learnings = list(all_learnings_set) # Convert set back to list
 
-    return ResearchResult(learnings=list(all_learnings_set), visitedUrls=list(all_visited_urls_set)) # Convert sets to lists in final result
+    return ResearchResult(learnings=flat_learnings, visitedUrls=list(all_visited_urls_set))
