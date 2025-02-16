@@ -1,0 +1,250 @@
+# deep-research-python/deep_research_lib/deep_research.py
+import asyncio
+from typing import List, Optional, Dict, Any, Callable, Set
+from pydantic import BaseModel, Field
+from concurrent.futures import ThreadPoolExecutor # For concurrent tasks
+import os
+
+# from mendable_firecrawl import FirecrawlApp, SearchResponse # Placeholder, needs actual Python Firecrawl lib or replacement
+from deep_research_lib.ai.providers import o3_mini_model, trim_prompt, get_llm_provider # Assuming providers.py is in ai dir
+from deep_research_lib.prompt import system_prompt
+from deep_research_lib.output_manager import OutputManager
+from deep_research_lib.ai.text_splitter import RecursiveCharacterTextSplitter # Ensure text_splitter is correctly placed
+
+output = OutputManager()
+llm_provider = get_llm_provider()
+
+def log(*args):
+    output.log(*args)
+
+class ResearchProgress(BaseModel):
+    currentDepth: int
+    totalDepth: int
+    currentBreadth: int
+    totalBreadth: int
+    currentQuery: Optional[str] = None
+    totalQueries: int
+    completedQueries: int
+
+class ResearchResult(BaseModel):
+    learnings: List[str] = Field(default_factory=list) # Initialize as empty list to avoid None issues
+    visitedUrls: List[str] = Field(default_factory=list) # Initialize as empty list
+
+
+CONCURRENCY_LIMIT = 2 # You can make this configurable via env var later
+
+# Initialize Firecrawl - Placeholder, replace with actual Python Firecrawl or alternative
+class FirecrawlApp: # Mock FirecrawlApp for now - replace with actual library or implementation
+    def __init__(self, api_key=None, api_url=None):
+        self.api_key = api_key
+        self.api_url = api_url
+        # Initialize actual Firecrawl library here if you integrate it
+
+    async def search(self, query: str, options: dict) -> Any: # Replace Any with actual SearchResponse type if available
+        log(f"Mock Firecrawl Search: {query} with options: {options}")
+        await asyncio.sleep(1) # Simulate network request delay
+        # Mocked response data - replace with actual Firecrawl or search results
+        mock_data = [
+            {"url": f"http://example.com/page_{i}", "markdown": f"Mock markdown content for {query} result {i+1}."} for i in range(2)
+        ]
+        return {"data": mock_data} # Mock SearchResponse-like structure
+
+
+firecrawl_api_key = os.environ.get("FIRECRAWL_KEY") or '' # Default to empty string if not set
+firecrawl_base_url = os.environ.get("FIRECRAWL_BASE_URL") # Can be None, Firecrawl lib should handle default
+firecrawl = FirecrawlApp(firecrawl_api_key, firecrawl_base_url)
+
+class SerpQueriesResponse(BaseModel):
+    queries: List[Dict[str, str]] = Field(description="List of SERP queries, max of numQueries")
+
+async def generate_serp_queries(query: str, num_queries: int = 3, learnings: Optional[List[str]] = None) -> List[Dict[str, str]]:
+    format_str_serp_queries = """{
+      "queries": [
+        {"query": "SERP Query 1", "researchGoal": "Research Goal 1"},
+        {"query": "SERP Query 2", "researchGoal": "Research Goal 2"},
+        ...
+      ]
+    }""" # Define expected format
+
+    prompt_text = f"""Given the following prompt from the user, generate a list of SERP queries to research the topic.
+Return a maximum of {num_queries} queries, but feel free to return less if the original prompt is clear.
+Make sure each query is unique and not similar to each other: <prompt>{query}</prompt>\n\n"""
+    if learnings:
+        prompt_text += f"Here are some learnings from previous research, use them to generate more specific queries: {chr(10).join(learnings)}" # use chr(10) for newline
+
+    # Add format instruction to prompt
+    prompt_text += f"\n\nOutput should be in JSON format: {format_str_serp_queries}"
+
+    response = await llm_provider.generate_object( # Use llm_provider here
+        prompt=prompt_text,
+        system=system_prompt(),
+        response_model=SerpQueriesResponse # Pydantic model for schema
+    )
+    
+    log(f"Created {len(response.queries)} queries: {response.queries}")
+    return response.queries[:num_queries]
+
+
+class SerpResultResponse(BaseModel):
+    learnings: List[str] = Field(description="List of learnings, max of numLearnings")
+    followUpQuestions: List[str] = Field(description="List of follow-up questions to research the topic further, max of numFollowUpQuestions")
+
+
+async def process_serp_result(query: str, result: Any, num_learnings: int = 3, num_follow_up_questions: int = 3) -> SerpResultResponse: # result type as Any for now
+    format_str_serp_result = """{
+      "learnings": ["Learning 1", "Learning 2", ...],
+      "followUpQuestions": ["Question 1", "Question 2", ...]
+    }"""
+    contents = [item['markdown'] for item in result['data'] if item.get('markdown')] # Safely get markdown content
+    contents = [trim_prompt(content, 25000) for content in contents]
+    log(f"Ran query: '{query}', found {len(contents)} contents")
+
+    content_tags = [f'<content>\n{content}\n</content>' for content in contents] # Create content tags separately
+    contents_string = chr(10).join(content_tags) # Join with newline
+
+    prompt_text = f"""Given the following contents from a SERP search for the query <query>{query}</query>,
+generate a list of learnings from the contents. Return a maximum of {num_learnings} learnings, but feel free to return less if the contents are clear.
+Make sure each learning is unique and not similar to each other. The learnings should be concise and to the point, as detailed and information dense as possible.
+Make sure to include any entities like people, places, companies, products, things, etc in the learnings, as well as any exact metrics, numbers, or dates.
+The learnings will be used to research the topic further.\n\n<contents>{contents_string}</contents>""" # use chr(10) for newline
+    
+    prompt_text += f"\n\nOutput should be in JSON format: {format_str_serp_result}"
+
+    response = await llm_provider.generate_object( # Use llm_provider
+        prompt=prompt_text,
+        system=system_prompt(),
+        response_model=SerpResultResponse, # Pydantic model
+        # abortSignal=AbortSignal.timeout(60_000), # No AbortSignal in Python asyncio directly, consider timeouts in httpx/openai calls
+    )
+    log(f"Created {len(response.learnings)} learnings: {response.learnings}")
+    return response
+
+
+class FinalReportResponse(BaseModel):
+    reportMarkdown: str = Field(description="Final report on the topic in Markdown")
+
+async def write_final_report(prompt: str, learnings: List[str], visited_urls: List[str]) -> str:
+    format_str_final_report = """{
+      "reportMarkdown": "Final report in markdown format..."
+    }""" # Define expected format
+    learnings_string = trim_prompt(chr(10).join([f"<learning>\n{learning}\n</learning>" for learning in learnings]), 150000) # use chr(10) for newline
+
+    prompt_text = f"""Given the following prompt from the user, write a final report on the topic using the learnings from research.
+Make it as as detailed as possible, aim for 3 or more pages, include ALL the learnings from research:\n\n<prompt>{prompt}</prompt>\n\n
+Here are all the learnings from previous research:\n\n<learnings>\n{learnings_string}\n</learnings>"""
+    
+    prompt_text += f"\n\nOutput should be in JSON format: {format_str_final_report}"
+
+    response = await llm_provider.generate_object( # Use llm_provider
+        prompt=prompt_text,
+        system=system_prompt(),
+        response_model=FinalReportResponse # Pydantic model
+    )
+
+    urls_section = f"\n\n## Sources\n\n{chr(10).join([f'- {url}' for url in visited_urls])}" # use chr(10) for newline
+    return response.reportMarkdown + urls_section
+
+
+async def deep_research(query: str, breadth: int, depth: int, learnings: Optional[List[str]] = None, visited_urls: Optional[List[str]] = None, on_progress: Optional[Callable[[ResearchProgress, ], None]] = None) -> ResearchResult:
+    progress = ResearchProgress(
+        currentDepth=depth,
+        totalDepth=depth,
+        currentBreadth=breadth,
+        totalBreadth=breadth,
+        totalQueries=0,
+        completedQueries=0,
+    )
+
+    def report_progress(update: Dict[str, Any]): # Simple function to update and report progress
+        nonlocal progress # Allow modification of outer scope 'progress'
+        for key, value in update.items():
+            setattr(progress, key, value) # Dynamically update progress attributes
+        if on_progress:
+            on_progress(progress) # Call progress callback
+
+    report_progress({"totalQueries": 0, "currentQuery": "Initializing..."}) # Initial progress update
+
+
+    serp_queries_data = await generate_serp_queries(query=query, learnings=learnings, num_queries=breadth)
+    report_progress({"totalQueries": len(serp_queries_data), "currentQuery": serp_queries_data[0]['query'] if serp_queries_data else None})
+
+
+    limit = asyncio.Semaphore(CONCURRENCY_LIMIT) # Asyncio semaphore for concurrency control
+    async def process_query_with_limit(serp_query_item): # Define inner function for semaphore
+        async with limit: # Acquire semaphore before processing
+            query_text = serp_query_item['query']
+            research_goal = serp_query_item['researchGoal']
+
+
+            try:
+                result = await firecrawl.search(query_text, options={"timeout": 15000, "limit": 5, "scrapeOptions": {"formats": ["markdown"]}}) # Example options
+
+                new_urls = [item['url'] for item in result['data'] if item.get('url')] # Safely extract URLs
+                new_breadth = max(1, breadth // 2) # Ensure new_breadth is at least 1
+                new_depth = depth - 1
+
+                serp_result_data = await process_serp_result(
+                    query=query_text, result=result, num_follow_up_questions=new_breadth
+                )
+                all_learnings = (learnings or []) + serp_result_data.learnings # Use empty list if learnings is None
+                all_urls = (visited_urls or []) + new_urls # Use empty list if visited_urls is None
+
+
+                if new_depth > 0:
+                    log(f"Researching deeper, breadth: {new_breadth}, depth: {new_depth}")
+                    report_progress({
+                        "currentDepth": new_depth,
+                        "currentBreadth": new_breadth,
+                        "completedQueries": progress.completedQueries + 1,
+                        "currentQuery": query_text,
+                    })
+
+                    next_query = f"""
+                    Previous research goal: {research_goal}
+                    Follow-up research directions: {chr(10).join(serp_result_data.followUpQuestions)}
+                    """.strip() # use chr(10) for newline
+
+
+                    recursive_result = await deep_research(
+                        query=next_query,
+                        breadth=new_breadth,
+                        depth=new_depth,
+                        learnings=all_learnings,
+                        visited_urls=all_urls,
+                        on_progress=on_progress,
+                    )
+                    return recursive_result
+
+                else:
+                    report_progress({
+                        "currentDepth": 0,
+                        "completedQueries": progress.completedQueries + 1,
+                        "currentQuery": query_text,
+                    })
+                    return ResearchResult(learnings=all_learnings, visitedUrls=all_urls) # Return ResearchResult object
+
+
+            except Exception as e:
+                error_message = str(e)
+                if "Timeout" in error_message:
+                    log(f"Timeout error running query: {query_text}: {e}")
+                else:
+                    log(f"Error running query: {query_text}: {e}")
+                return ResearchResult() # Return empty ResearchResult on error
+
+
+    tasks = [process_query_with_limit(serp_query) for serp_query in serp_queries_data] # Create tasks for concurrent processing
+    results = await asyncio.gather(*tasks) # Gather results from all tasks
+
+
+    # Combine and deduplicate learnings and visited URLs from all results
+    all_learnings_set: Set[str] = set()
+    all_visited_urls_set: Set[str] = set()
+
+    for res in results:
+        if res: # Check if result is not None (in case of errors, process_query_with_limit might return None or empty ResearchResult)
+            all_learnings_set.update(res.learnings)
+            all_visited_urls_set.update(res.visitedUrls)
+
+
+    return ResearchResult(learnings=list(all_learnings_set), visitedUrls=list(all_visited_urls_set)) # Convert sets to lists in final result
