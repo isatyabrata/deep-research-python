@@ -23,7 +23,7 @@ async def run_research():
 
     # Get breadth and depth parameters
     while True:
-        breadth_str = (await ask_question('Enter research breadth (recommended 2-10, default 4): ')).strip()
+        breadth_str = (await ask_question('Enter research breadth (recommended 2-10, default 3): ')).strip()
         try:
             breadth = int(breadth_str) if breadth_str else 4
             break
@@ -41,7 +41,7 @@ async def run_research():
     log("Creating research plan...")
 
     # Generate follow-up questions
-    follow_up_questions = await generate_feedback(query=initial_query)
+    follow_up_questions = await generate_feedback(query=initial_query, num_questions=breadth)
 
     log("\nTo better understand your research needs, please answer these follow-up questions:")
 
@@ -58,8 +58,15 @@ Follow-up Questions and Answers:
 {chr(10).join([f'Q: {q}{chr(10)}A: {answers[i]}' for i, q in enumerate(follow_up_questions)])}
     """.strip() # using chr(10) for newline to be explicit
 
-    log("\nResearching your topic...")
-    log("\nStarting research with progress tracking...\n")
+    # Add a breakpoint
+    input("Press Enter to continue to comnined query")
+    log("Combined Query:", combined_query)
+    # log("\nResearching your topic...")
+    # log("\nStarting research with progress tracking...\n")
+
+    # Add a breakpoint
+    input("Press Enter to continue next..")
+
 
     async def progress_callback(progress): # Define callback function inside run_research
         output.update_progress(progress)
@@ -70,9 +77,19 @@ Follow-up Questions and Answers:
         depth=depth,
         on_progress=progress_callback # Pass the callback function
     )
+    # Add a breakpoint
+    input("Press Enter to continue to research_result")
+    log("research_result:", research_result)
+    input("Press Enter to continue next")
+
     learnings = research_result.learnings # Access learnings from ResearchResult
     visited_urls = research_result.visitedUrls # Access visitedUrls from ResearchResult
 
+    # Add a breakpoint
+    input("Press Enter to continue to learning and visited urls")
+    log(f"learnings:{learnings}\n\n visited_urls:{visited_urls}")
+    input("Press Enter to continue...")
+    
     log("Writing final report...")
     print(f"\n\nLearnings:\n\n{chr(10).join(learnings)}") # Use print() instead of log()
     log(f"\n\nVisited URLs ({len(visited_urls)}):\n\n{chr(10).join(visited_urls)}") # using chr(10) for newline
