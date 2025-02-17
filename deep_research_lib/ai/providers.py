@@ -96,7 +96,7 @@ class OllamaProvider:
             log_provider("OllamaProvider.generate_object: Calling client.post('/chat/completions')...") # Provider Log
             payload = {
                 "model": self.model_name,
-                "format": "json",
+                "format": response_model.model_json_schema(),
                 "messages": [ # Use "messages" list
                     {"role": "system", "content": system},
                     {"role": "user", "content": prompt}
@@ -107,7 +107,7 @@ class OllamaProvider:
             log_provider(f"OllamaProvider.generate_object: API Payload: {payload}") # Log API payload
 
             async with httpx.AsyncClient(base_url=self.base_url) as client: # Create a NEW client here
-                response = await client.post("/chat/completions", json=payload, timeout=60.0) # Adjust timeout as needed
+                response = await client.post("/chat/completions", json=payload, timeout=240.0) # Adjust timeout as needed
                 log_provider("OllamaProvider.generate_object: client.post('/chat/completions') call completed") # Provider Log
                 log_provider(f"OllamaProvider.generate_object: Raw API Response (status code): {response.status_code}") # Log status code
                 response.raise_for_status() # Raise HTTPError for bad responses (4xx or 5xx)
@@ -153,7 +153,10 @@ class OllamaProvider:
 
 
         except httpx.HTTPError as e:
-            log_provider(f"OllamaProvider.generate_object: Ollama API HTTP Error: {e}, Response content: {e.response.text if e.response else 'No response content'}") # Include response text in HTTPError log
+            log_provider(f"OllamaProvider.generate_object: Ollama API HTTP Error: {e}, Response content: {e.response.text if hasattr(e, 'response') and e.response else 'No response content'}") # Safe access to response.text
+            raise
+        except httpx.ReadTimeout as e: # Catch ReadTimeout specifically
+            log_provider(f"OllamaProvider.generate_object: Ollama API ReadTimeout Error: {e}") # Log Timeout Error
             raise
         except Exception as e:
             log_provider(f"OllamaProvider.generate_object: Ollama API Error: {e}")
@@ -196,21 +199,26 @@ def trim_prompt(prompt: str, context_size: int = int(os.environ.get("CONTEXT_SIZ
 
     tokens = ENCODER.encode(prompt)
     length = len(tokens)
+    log_provider(f"trim_prompt: Initial prompt tokens: {length}, context_size: {context_size}") # LOG - added logging
     if length <= context_size:
+        log_provider("trim_prompt: Prompt within context size, no trimming needed.") # LOG - added logging
         return prompt
 
     overflow_tokens = length - context_size
     chunk_size_chars = len(prompt) - overflow_tokens * 3  # Rough char estimate
     if chunk_size_chars < MIN_CHUNK_SIZE:
-        return prompt[:MIN_CHUNK_SIZE]
+        trimmed_prompt = prompt[:MIN_CHUNK_SIZE]
+        log_provider(f"trim_prompt: Prompt trimmed to MIN_CHUNK_SIZE due to overflow. New length: {len(ENCODER.encode(trimmed_prompt))} tokens.") # LOG - added logging
+        return trimmed_prompt
+    else:
+        splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size_chars, chunk_overlap=0)
+        trimmed_prompt = splitter.split_text(prompt)[0] or "" # Handle potential None return from split_text
+        log_provider(f"trim_prompt: Prompt trimmed by RecursiveCharacterTextSplitter. New length: {len(ENCODER.encode(trimmed_prompt))} tokens.") # LOG - added logging
 
-    splitter = RecursiveCharacterTextSplitter(chunk_size=chunk_size_chars, chunk_overlap=0)
-    trimmed_prompt = splitter.split_text(prompt)[0] or "" # Handle potential None return from split_text
+        if len(trimmed_prompt) == len(prompt): # Handle edge case where trimmed prompt is same length
+            return trim_prompt(prompt[:chunk_size_chars], context_size)
 
-    if len(trimmed_prompt) == len(prompt): # Handle edge case where trimmed prompt is same length
-        return trim_prompt(prompt[:chunk_size_chars], context_size)
-
-    return trim_prompt(trimmed_prompt, context_size)
+        return trim_prompt(trimmed_prompt, context_size)
 
 
 # Example usage (for testing - remove or comment out in final version)
